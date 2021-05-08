@@ -23,7 +23,12 @@
 """
 from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication
 from qgis.PyQt.QtGui import QIcon
-from qgis.PyQt.QtWidgets import QAction
+from qgis.core import QgsMapLayerProxyModel, QgsRasterLayer
+from qgis.PyQt.QtWidgets import QAction, QMessageBox
+from qgis.analysis import *
+from qgis.utils import iface
+from qgis.core import *
+from osgeo import gdal
 
 # Initialize Qt resources from file resources.py
 from .resources import *
@@ -179,6 +184,92 @@ class BuiltUpDensitiy:
                 action)
             self.iface.removeToolBarIcon(action)
 
+    def clipRaster(self, vec, path, forClip):
+
+        gdal.UseExceptions()
+        vecClip = vec
+        ras = path
+        output = forClip + "_clipped.tif"
+        result = gdal.Warp(destNameOrDestDS=output, srcDSOrSrcDSTab=ras, cutlineDSName=vecClip)
+        result = None
+        QMessageBox.information(self.dlg, "Message", "clipRaster")
+        iface.addRasterLayer(output)
+
+    def addRasterCalculatorEntry(self, ref, raster):
+        ras = QgsRasterCalculatorEntry()
+        ras.bandNumber = 1
+        ras.raster = raster
+        ras.ref = ref
+        return ras
+
+    def runRasterCalculator(self, formula, save_path, layer, entries):
+        rasterCalculator = QgsRasterCalculator(formula, save_path, "GTiff", layer.extent(), layer.width(),
+                                               layer.height(), entries)
+        rasterCalculator.processCalculation()
+        
+    def ndvi_calc(self):
+        layer_ndvi_nir = self.dlg.NDVImcb_input_NIR.currentLayer()
+        layer_ndvi_red = self.dlg.NDVImcb_input_RED.currentLayer()
+        forClip = self.dlg.NDVIFile_output.filePath()
+        save_file_path = forClip + '.tif'
+        vec = self.dlg.NDVIFile_vector.filePath()
+        if self.outputCheck(forClip):
+            entries = [
+                self.addRasterCalculatorEntry("NIR@1", layer_ndvi_nir),
+                self.addRasterCalculatorEntry("RED@2", layer_ndvi_red),
+            ]
+            self.runRasterCalculator('("NIR@1" - "RED@2") / ("NIR@1" + "RED@2")', save_file_path, layer_ndvi_nir,
+                                     entries)
+            if vec:
+                self.clipRaster(vec, save_file_path, forClip)
+            else:
+                QMessageBox.information(self.dlg, "Message", "ndvi calc")
+                iface.addRasterLayer(save_file_path)
+
+    def ndbi_calc(self):
+        layer_ndbi_nir = self.dlg.NDBImcb_input_NIR.currentLayer()
+        layer_ndbi_swir = self.dlg.NDBImcb_input_SWIR.currentLayer()
+        forClip = self.dlg.NDBIFile_output.filePath()
+        save_file_path = forClip + '.tif'
+        vec = self.dlg.NDBIFile_vector.filePath()
+
+        if self.outputCheck(forClip):
+            entries = [
+                self.addRasterCalculatorEntry("NIR@1", layer_ndbi_nir),
+                self.addRasterCalculatorEntry("SWIR@2", layer_ndbi_swir),
+            ]
+            self.runRasterCalculator('("SWIR@2" - "NIR@1") / ("SWIR@2" + "NIR@1")', save_file_path, layer_ndbi_nir,
+                                     entries)
+            if vec:
+                self.clipRaster(vec, save_file_path, forClip)
+            else:
+                QMessageBox.information(self.dlg, "Message", "ndBi calc")
+                iface.addRasterLayer(save_file_path)
+
+    def densityInex_calc(self):
+        layer_ndvi = self.dlg.Densitymcb_input_NDVI.currentLayer()
+        layer_ndbi = self.dlg.Densitymcb_input_NDBI.currentLayer()
+        outputCheckPath = self.dlg.DensityFile_output.filePath()
+        save_file_path = outputCheckPath + '.tif'
+        if self.outputCheck(outputCheckPath):
+            entries = [
+                self.addRasterCalculatorEntry("NDVI@1", layer_ndvi),
+                self.addRasterCalculatorEntry("NDBI@2", layer_ndbi),
+            ]
+            self.runRasterCalculator('("NDBI@2" - "NDVI@1")', save_file_path, layer_ndvi, entries)
+            QMessageBox.information(self.dlg, "Message", "densitiy Index CALC")
+            iface.addRasterLayer(save_file_path)
+
+    def outputCheck(self, outputPath):
+        if outputPath:
+            return True
+        else:
+            QMessageBox.warning(self.dlg, "Output Path Not Found", "Please input output path")
+            return False
+
+    def on_combobox_change(self, value, dlg):
+        selected_layer = QgsProject.instance().mapLayersByName(value)[0]
+        dlg.setLayer(selected_layer)
 
     def run(self):
         """Run method that performs all the real work"""
@@ -189,6 +280,51 @@ class BuiltUpDensitiy:
             self.first_start = False
             self.dlg = BuiltUpDensitiyDialog()
 
+            # set filter
+            self.dlg.NDVIFile_output.setFilter("Tagged Image File (*tif)")
+            self.dlg.NDBIFile_output.setFilter("Tagged Image File (*tif)")
+            self.dlg.DensityFile_output.setFilter("Tagged Image File (*tif)")
+
+            self.dlg.NDBIFile_vector.setFilter("Shapefile (*shp)")
+            self.dlg.NDVIFile_vector.setFilter("Shapefile (*shp)")
+
+            self.dlg.NDVImcb_input_NIR.setFilters(QgsMapLayerProxyModel.RasterLayer)
+            self.dlg.NDVImcb_input_RED.setFilters(QgsMapLayerProxyModel.RasterLayer)
+            self.dlg.NDBImcb_input_NIR.setFilters(QgsMapLayerProxyModel.RasterLayer)
+            self.dlg.NDBImcb_input_SWIR.setFilters(QgsMapLayerProxyModel.RasterLayer)
+
+            self.dlg.Densitymcb_input_NDBI.setFilters(QgsMapLayerProxyModel.RasterLayer)
+            self.dlg.Densitymcb_input_NDVI.setFilters(QgsMapLayerProxyModel.RasterLayer)
+
+            # init layer ndvi
+            self.dlg.NDVImcb_input_NIR.currentLayer()
+            self.dlg.NDVImcb_input_RED.currentLayer()
+
+            # init layer ndbi
+            self.dlg.NDBImcb_input_NIR.currentLayer()
+            self.dlg.NDBImcb_input_SWIR.currentLayer()
+
+            # init layer densityIndex
+            self.dlg.Densitymcb_input_NDVI.currentLayer()
+            self.dlg.Densitymcb_input_NDBI.currentLayer()
+
+            # event
+            self.dlg.NDVImcb_input_NIR.currentTextChanged.connect(
+                lambda value: self.on_combobox_change(value, self.dlg.NDVImcb_input_NIR))
+            self.dlg.NDVImcb_input_RED.currentTextChanged.connect(
+                lambda value: self.on_combobox_change(value, self.dlg.NDVImcb_input_RED))
+            self.dlg.NDBImcb_input_NIR.currentTextChanged.connect(
+                lambda value: self.on_combobox_change(value, self.dlg.NDBImcb_input_NIR))
+            self.dlg.NDBImcb_input_SWIR.currentTextChanged.connect(
+                lambda value: self.on_combobox_change(value, self.dlg.NDBImcb_input_SWIR))
+            self.dlg.Densitymcb_input_NDVI.currentTextChanged.connect(
+                lambda value: self.on_combobox_change(value, self.dlg.Densitymcb_input_NDVI))
+            self.dlg.Densitymcb_input_NDBI.currentTextChanged.connect(
+                lambda value: self.on_combobox_change(value, self.dlg.Densitymcb_input_NDBI))
+
+            self.dlg.NDVIButton_run.clicked.connect(self.ndvi_calc)
+            self.dlg.NDBIButton_run.clicked.connect(self.ndbi_calc)
+            self.dlg.DensityButton_run.clicked.connect(self.densityInex_calc)
         # show the dialog
         self.dlg.show()
         # Run the dialog event loop
